@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="sl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kako VPP govori s polnilnico</title>
+<meta name="description" content="Interaktivni prototip: pot sporočil OCPP 2.1 in tok energije med omrežjem, VPP, CSMS in polnilnicami na parkirišču z 10 električnimi kombiji (scenarij po Marentiču, UL FE 2023).">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: infographic sheet — title + legend, four horizontal actor lanes with numbered envelopes travelling between them, numbered step cards below, JSON card at the side. Deliberately one light look (white sheet, pastel actors). */
+:root{
+  color-scheme:light;
+  --paper:#ffffff; --sheet:#f7f8fb; --ink:#1b2232; --muted:#667085; --line:#e3e7ef;
+  --grid:#6a55d8; --grid-bg:#f0edff;
+  --vpp:#1f8a5b;  --vpp-bg:#e5f6ed;
+  --csms:#2d6cd0; --csms-bg:#e6effd;
+  --cs:#cf6d1b;   --cs-bg:#fff0e2;
+  --ocpp:#2d6cd0; --ocpp-strip:#f1f5ff;
+  --charge:#3a7be0; --discharge:#e0782a; --bad:#d64545; --bad-bg:#fdecec; --part:#b7800a; --part-bg:#fdf5e1; --ok:#1f8a5b;
+  --f-head:"Plus Jakarta Sans",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--f-head);font-size:14px;line-height:1.5;
+  padding-block:28px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+h1,h2,h3{margin:0;text-wrap:balance}
+header{display:flex;flex-direction:column;gap:10px}
+.kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--csms)}
+.kicker i{width:8px;height:8px;border-radius:50%;background:var(--csms)}
+h1{font-size:clamp(30px,4.6vw,52px);font-weight:800;letter-spacing:-.02em;line-height:1.04}
+h1 span{color:var(--csms)}
+.sub{font-size:clamp(15px,1.6vw,18px);color:var(--muted);max-width:70ch;margin:0}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12.5px;color:var(--muted);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.dot{width:12px;height:12px;border-radius:4px;display:inline-block}
+.ln{width:22px;height:0;display:inline-block;border-top:2px solid var(--ocpp)}
+.ln.dash{border-top:2px dashed var(--muted)}
+.ln.bad{border-top:2px dashed var(--bad)}
+
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;border:1.5px solid var(--line);border-radius:16px;padding:12px 14px;background:var(--sheet)}
+.bar .lab{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-right:6px}
+.seg{display:inline-flex;background:var(--paper);border:1.5px solid var(--line);border-radius:999px;padding:3px}
+.seg button{all:unset;cursor:pointer;padding:5px 13px;border-radius:999px;font-family:var(--f-mono);font-size:12.5px;font-weight:600;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.play{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:8px;background:var(--csms);color:var(--paper);font-weight:700;border-radius:999px;padding:8px 16px 8px 12px}
+.play svg{width:14px;height:14px;fill:currentColor}
+.timebox{flex:1 1 300px;display:flex;align-items:center;gap:12px;min-width:0}
+.timebox input{flex:1;min-width:0;accent-color:var(--csms)}
+.clock{font-family:var(--f-mono);font-weight:600;font-size:15px;min-width:104px;font-variant-numeric:tabular-nums}
+button:focus-visible,input:focus-visible,.step:focus-visible{outline:2.5px solid var(--csms);outline-offset:2px}
+
+.main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
+.card{border:1.5px solid var(--line);border-radius:18px;background:var(--paper);padding:16px 18px;min-width:0}
+.card h2{font-size:18px;font-weight:800;letter-spacing:-.01em}
+.card .hint{font-size:12.5px;color:var(--muted);margin:2px 0 0}
+.stage-scroll{overflow-x:auto;margin-top:10px}
+#stage{display:block;width:100%;min-width:700px;height:auto}
+#stage text{font-family:var(--f-head)}
+#stage .mono{font-family:var(--f-mono)}
+#stage .badge{cursor:pointer}
+#stage .badge:hover circle{stroke-width:3}
+
+.steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
+.step{all:unset;cursor:pointer;display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px;align-items:start;border:1.5px solid var(--line);border-radius:14px;padding:10px 12px;background:var(--paper)}
+.step:hover{border-color:#c9d2e2}
+.step[aria-pressed="true"]{border-color:var(--csms);background:var(--ocpp-strip)}
+.num{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:13px;color:var(--paper)}
+.step .nm{font-family:var(--f-mono);font-weight:600;font-size:13px;word-break:break-word}
+.step .dir{font-size:11.5px;color:var(--muted);font-weight:600}
+.step .ex{font-size:12.5px;color:var(--ink);margin-top:2px}
+.step.miss .nm{color:var(--bad);text-decoration:line-through;text-decoration-thickness:2px}
+.step.miss{border-color:#f3c4c4;background:var(--bad-bg)}
+.step.part{border-color:#efd9a6}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.04em;padding:1px 7px;border-radius:999px;margin-left:6px;vertical-align:1px;font-family:var(--f-head);text-decoration:none}
+.tag.miss{background:var(--bad);color:var(--paper)} .tag.part{background:var(--part-bg);color:var(--part)} .tag.ok{background:var(--vpp-bg);color:var(--ok)}
+
+aside{display:flex;flex-direction:column;gap:18px;position:sticky;top:max(16px,env(safe-area-inset-top,0px))}
+.count .big{font-size:40px;font-weight:800;line-height:1;margin-top:8px;font-variant-numeric:tabular-nums}
+.count .big small{font-size:16px;color:var(--muted);font-weight:600}
+.dots{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.rq{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:10px;font-weight:700;font-family:var(--f-mono);border:1.5px solid var(--line);color:var(--muted)}
+.rq.d{border-color:var(--discharge);color:var(--discharge)} .rq.c{border-color:var(--charge);color:var(--charge)}
+.rq.done.ok.d{background:var(--discharge);color:var(--paper)} .rq.done.ok.c{background:var(--charge);color:var(--paper)}
+.rq.done.fail{background:var(--bad-bg);border-color:var(--bad);color:var(--bad)}
+.count .note{font-size:12.5px;color:var(--muted);margin:10px 0 0}
+.json .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.pill{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--sheet);color:var(--muted);border:1px solid var(--line)}
+.json p{margin:10px 0;font-size:13.5px}
+pre{margin:0;font-family:var(--f-mono);font-size:12px;line-height:1.55;background:var(--sheet);border:1.5px solid var(--line);border-radius:12px;padding:12px;overflow:auto;max-height:360px}
+.jk{color:var(--csms)} .js{color:var(--vpp)} .jn{color:var(--cs)}
+footer{font-size:12px;color:var(--muted);max-width:110ch}
+
+/* parking-lot energy scene */
+.scene-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px 24px}
+.stats{display:flex;flex-wrap:wrap;gap:10px}
+.stat{border:1.5px solid var(--line);border-radius:14px;padding:8px 12px;min-width:132px;background:var(--sheet)}
+.stat .l{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.stat .v{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.25}
+.stat .v.c{color:var(--charge)} .stat .v.d{color:var(--discharge)} .stat .v.bad{color:var(--bad)} .stat .v.ok{color:var(--ok)}
+.scene-scroll{overflow-x:auto;margin-top:12px}
+#scene{display:block;width:100%;min-width:820px;height:auto}
+#scene text{font-family:var(--f-head)}
+#scene .mono{font-family:var(--f-mono)}
+.flow{fill:none;stroke-linecap:round;stroke-dasharray:2 10;animation:flow 0.9s linear infinite}
+.flow.rev{animation-direction:reverse}
+.flow.slow{animation-duration:1.6s}
+@keyframes flow{to{stroke-dashoffset:-24}}
+.scene-legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12.5px;color:var(--muted);margin-top:8px}
+.scene-legend span{display:inline-flex;align-items:center;gap:6px}
+@media (prefers-reduced-motion:reduce){.flow{animation:none;stroke-dasharray:6 6}}
+
+@media (max-width:1020px){.main{grid-template-columns:minmax(0,1fr)} aside{position:static}}
+@media (max-width:620px){.steps{grid-template-columns:minmax(0,1fr)} .count .big{font-size:32px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="kicker"><i></i>V2G · OCPP 2.1 · scenarij po Marentiču</div>
+    <h1>Kako VPP govori <span>s polnilnico</span></h1>
+    <p class="sub">Ena noč na službenem parkirišču z 10 električnimi kombiji: pot vsakega sporočila od omrežja prek virtualne elektrarne in CSMS do polnilnice in nazaj.</p>
+    <div class="legend" aria-label="Legenda">
+      <span><i class="dot" style="background:var(--grid-bg);border:1.5px solid var(--grid)"></i>Omrežje</span>
+      <span><i class="dot" style="background:var(--vpp-bg);border:1.5px solid var(--vpp)"></i>VPP</span>
+      <span><i class="dot" style="background:var(--csms-bg);border:1.5px solid var(--csms)"></i>CSMS</span>
+      <span><i class="dot" style="background:var(--cs-bg);border:1.5px solid var(--cs)"></i>Polnilnica in vozilo</span>
+      <span><i class="ln"></i>OCPP</span>
+      <span><i class="ln dash"></i>drug vmesnik</span>
+      <span><i class="ln bad"></i>sporočila ni v izbrani različici</span>
+    </div>
+  </header>
+
+  <section class="bar" aria-label="Upravljanje">
+    <div><span class="lab">Različica</span>
+      <div class="seg" id="ver"><button type="button" data-v="1.6" aria-pressed="false">1.6</button><button type="button" data-v="2.0.1" aria-pressed="false">2.0.1</button><button type="button" data-v="2.1" aria-pressed="true">2.1</button></div></div>
+    <button type="button" class="play" id="play"><svg viewBox="0 0 16 16" id="pi"><path d="M4 2l10 6-10 6z"/></svg><span id="pl">Predvajaj</span></button>
+    <div class="timebox"><label class="clock" for="time" id="clock">19.00–20.00</label><input type="range" id="time" min="0" max="15" step="1" value="3" aria-label="Ura noči"></div>
+  </section>
+
+  <section class="card" aria-labelledby="scene-title">
+    <div class="scene-head">
+      <div>
+        <h2 id="scene-title">Parkirišče in tok energije</h2>
+        <p class="hint" id="scene-sub">19.00–20.00 · tri vozila oddajajo energijo v omrežje</p>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="l">Zahteva omrežja</div><div class="v" id="s-req">−60 kW</div></div>
+        <div class="stat"><div class="l">Moč na priključku</div><div class="v" id="s-net">−60 kW</div></div>
+        <div class="stat"><div class="l">Vozila</div><div class="v" id="s-cnt" style="font-size:15px">3 praznijo · 0 polni</div></div>
+        <div class="stat"><div class="l">Stanje</div><div class="v" id="s-ok">izpolnjeno</div></div>
+      </div>
+    </div>
+    <div class="scene-scroll"><svg id="scene" viewBox="0 40 1240 296" role="img" aria-label="Parkirišče z 10 polnilnicami in kombiji, povezano z omrežjem, in tok energije v izbrani uri"></svg></div>
+    <div class="scene-legend">
+      <span><i class="ln" style="border-top-color:var(--charge);border-top-style:dotted;border-top-width:3px"></i>energija iz omrežja v vozilo</span>
+      <span><i class="ln" style="border-top-color:var(--discharge);border-top-style:dotted;border-top-width:3px"></i>energija iz vozila v omrežje</span>
+      <span><i class="ln" style="border-top-color:var(--line);border-top-width:3px"></i>brez toka</span>
+      <span><i class="ln bad"></i>praznjenje zahtevano, ukaz ni prenesen</span>
+    </div>
+  </section>
+
+  <div class="main">
+    <div class="card">
+      <h2 id="stagetitle">19.00–20.00 · omrežje zahteva praznjenje</h2>
+      <p class="hint" id="stagehint">Kuverte potujejo v oštevilčenem vrstnem redu. Klik na številko odpre vsebino sporočila.</p>
+      <div class="stage-scroll"><svg id="stage" viewBox="0 0 900 484" role="img" aria-label="Pasovi akterjev in sporočila med njimi"></svg></div>
+      <div class="steps" id="steps"></div>
+    </div>
+    <aside>
+      <div class="card count">
+        <h2>Zahteve omrežja</h2>
+        <p class="hint">izpolnjene do izbrane ure</p>
+        <div class="big" id="cnt">4 <small>/ 9</small></div>
+        <div class="dots" id="dots"></div>
+        <p class="note" id="cntnote"></p>
+      </div>
+      <div class="card json">
+        <h2 id="jname">SetChargingProfile</h2>
+        <div class="meta"><span class="pill" id="jdir">CSMS → polnilnica</span><span class="pill" id="jproto">OCPP 2.1</span></div>
+        <p id="jex"></p>
+        <pre id="jbody" tabindex="0" aria-label="JSON vsebina sporočila"></pre>
+      </div>
+    </aside>
+  </div>
+
+  <footer>Scenarij po T. Marentič, magistrsko delo, UL FE 2023: 10 kombijev × 100 kWh, dvosmerne polnilnice 20 kW, priklop 16.00–8.00, SoC 20 → 80 %, največ 2 uri praznjenja na vozilo, SoC nikoli pod 20 %. Omrežje 19–23 h zahteva praznjenje 3 vozil na uro (−60 kW), 0–5 h polnjenje 4 vozil na uro (+80 kW). Razpored da 54 ur polnjenja in praznjenja, kot Marentičev optimum. Vsebina JSON je poenostavljena po shemah OCPP; vmesnik VPP–CSMS ni del OCPP in je prikazan v slogu OpenADR 3.0.</footer>
+</div>
+
+<script>
+(() => {
+const HOURS=[16,17,18,19,20,21,22,23,0,1,2,3,4,5,6,7];
+const P21=["ff.d..d.c.c....f","ff.d..d.c.c....f","f..d....c..c...f","f...d...c..c...f","f...d....c.c...f","f...d....c.c...f","f....d...c..c..f","f....d...c..c..f","f....d....c.c..f","f.....d...c.c..f"];
+const PNO=P21.map(r=>r.split('').map((ch,i)=>(ch==='d'||(ch==='f'&&i<3))?'.':ch).join(''));
+const DIS=[3,4,5,6], CHG=[8,9,10,11,12];
+const st={ver:'2.1',t:3,sel:0,playing:false,animStep:-1};
+const $=id=>document.getElementById(id);
+const pad=n=>String(n).padStart(2,'0');
+const slot=t=>`${HOURS[t]}.00–${(HOURS[t]+1)%24}.00`;
+const iso=(t,m=0)=>`2026-10-${HOURS[t]>=16?'28':'29'}T${pad(HOURS[t])}:${pad(m)}:00+01:00`;
+const ev=i=>`EV-${pad(i+1)}`;
+const plan=()=>st.ver==='2.1'?P21:PNO;
+function socAt(i,t){let s=20;const p=plan()[i];for(let k=0;k<=t;k++){const c=p[k];if(c==='c'||c==='f')s=Math.min(80,s+20);else if(c==='d')s=Math.max(20,s-20)}return s}
+function focus(t){
+  if(DIS.includes(t))return P21.findIndex(r=>r[t]==='d');
+  if(CHG.includes(t))return P21.findIndex(r=>r[t]==='c');
+  return 0;
+}
+const LANES=[
+  {key:'grid',name:'Omrežje',sub:'ELES / DSO',y:8,h:80,a:48},
+  {key:'vpp',name:'VPP',sub:'agregator',y:104,h:80,a:144},
+  {key:'csms',name:'CSMS',sub:'platforma',y:200,h:76,a:238},
+  {key:'cs',name:'Polnilnica + vozilo',sub:'10 × 20 kW · 100 kWh',y:344,h:132,a:362}];
+const COL={grid:'var(--grid)',vpp:'var(--vpp)',csms:'var(--csms)',cs:'var(--cs)'};
+const BG={grid:'var(--grid-bg)',vpp:'var(--vpp-bg)',csms:'var(--csms-bg)',cs:'var(--cs-bg)'};
+const ICON={
+  grid:'<path d="M13 2 5 13h6l-1 9 8-12h-6l1-8z"/>',
+  vpp:'<path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.4 1.6A3.3 3.3 0 0 0 7 18z"/><path d="M9 14h6M12 11v6"/>',
+  csms:'<rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/>',
+  cs:'<rect x="5" y="3" width="9" height="18" rx="1.5"/><path d="M8 8h3M14 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0v-6"/>'};
+
+/* ---------- messages ---------- */
+function mk(type,from,to,status,name,payload,explain,note){return {type,from,to,status,name,payload,explain,note}}
+function txid(i){return `TX-${ev(i)}-1028`}
+function meterJ(i,t){
+  let imp=0,exp=0;const p=plan()[i];for(let k=0;k<=t;k++){const c=p[k];if(c==='c'||c==='f')imp+=20;else if(c==='d')exp+=20}
+  if(st.ver==='1.6')return {connectorId:1,transactionId:1028+i,meterValue:[{timestamp:iso(t,59),sampledValue:[{value:String(imp),measurand:'Energy.Active.Import.Register',unit:'kWh'}]}]};
+  const sv=[{value:imp,measurand:'Energy.Active.Import.Register',unitOfMeasure:{unit:'kWh'}}];
+  if(st.ver==='2.1')sv.push({value:exp,measurand:'Energy.Active.Export.Register',unitOfMeasure:{unit:'kWh'}});
+  sv.push({value:socAt(i,t),measurand:'SoC',unitOfMeasure:{unit:'Percent'}});
+  return {evseId:1,meterValue:[{timestamp:iso(t,59),sampledValue:sv}]};
+}
+function scpJ(i,t,kind){
+  if(st.ver==='1.6')return {connectorId:1,csChargingProfiles:{chargingProfileId:300+t,transactionId:1028+i,stackLevel:1,chargingProfilePurpose:'TxProfile',chargingProfileKind:'Absolute',chargingSchedule:{startSchedule:iso(t),chargingRateUnit:'W',chargingSchedulePeriod:[{startPeriod:0,limit:kind==='charge'?20000:0}]}}};
+  let per={startPeriod:0};
+  if(st.ver==='2.1'){
+    if(kind==='discharge')per={startPeriod:0,operationMode:'CentralSetpoint',setpoint:-20000,dischargeLimit:-20000};
+    else if(kind==='charge')per={startPeriod:0,operationMode:'ChargingOnly',limit:20000};
+    else per={startPeriod:0,operationMode:'Idle'};
+  } else per.limit=kind==='charge'?20000:0;
+  return {evseId:1,chargingProfile:{id:300+t,stackLevel:1,chargingProfilePurpose:'TxProfile',chargingProfileKind:'Absolute',transactionId:txid(i),chargingSchedule:[{id:1,startSchedule:iso(t),chargingRateUnit:'W',chargingSchedulePeriod:[per]}]}};
+}
+function buildSteps(t){
+  const i=focus(t), v=st.ver, S=[];
+  const ocppName=v==='1.6'?'OCPP 1.6':'OCPP '+v;
+  const flex=()=>S.push(mk('vpp',2,1,v==='2.1'?'ok':'part','poročilo o prožnosti',
+    {parkirisce:'sluzbeno-10',vozila:10,socZnan:v!=='1.6',casOdhoda:v==='1.6'?null:'08:00',energijaZaPolnjenje_kWh:v==='1.6'?null:Array.from({length:10},(_,k)=>80-socAt(k,t)).reduce((a,b)=>a+b,0),praznjenjeMogoce_kW:v==='2.1'?Array.from({length:10},(_,k)=>socAt(k,t)>20?20:0).reduce((a,b)=>a+b,0):0},
+    'CSMS iz podatkov polnilnic sestavi poročilo, koliko prožnosti ima parkirišče, in ga pošlje VPP.',
+    v==='1.6'?'Brez SoC in časa odhoda VPP ne ve, koliko lahko ponudi.':v==='2.0.1'?'Praznjenja 2.0.1 ne podpira, zato je ponudba samo polnjenje.':''));
+  const mv=()=>S.push(mk('ocpp',3,2,v==='1.6'?'part':'ok','MeterValues',meterJ(i,t),
+    'Polnilnica ob koncu ure sporoči števce energije in SoC, kar je dokaz, da je bila storitev izvedena.',
+    v==='1.6'?'OCPP 1.6 pošlje energijo, SoC pa ne.':''));
+  const scp=(kind)=>{
+    const miss=kind==='discharge'&&v!=='2.1';
+    S.push(mk('ocpp',2,3,miss?'miss':'ok','SetChargingProfile',miss?{opomba:`OCPP ${v} nima standardiziranega ukaza za oddajo v omrežje.`}:scpJ(i,t,kind),
+      kind==='discharge'?'CSMS polnilnici ukaže praznjenje z 20 kW: način CentralSetpoint z negativnim setpoint −20000 W.':kind==='charge'?(v==='2.1'?'CSMS polnilnici ukaže polnjenje z 20 kW (način ChargingOnly).':'CSMS polnilnici ukaže polnjenje z omejitvijo 20000 W.'):(v==='2.1'?'Vozilo to uro miruje (način Idle).':'Vozilo to uro miruje (omejitev 0 W).'),
+      miss?`V OCPP ${v} tega ukaza ni.`:''));
+    S.push(mk('ocpp',3,2,miss?'miss':'ok','SetChargingProfileResponse',miss?{opomba:'Brez ukaza ni odgovora.'}:{status:'Accepted'},'Polnilnica potrdi, da je urnik sprejela.',miss?'Ukaz ni bil poslan.':''));
+  };
+  const grid=(type)=>{
+    const kw=type==='d'?-60:80;
+    S.push(mk('grid',0,1,'ok','zahteva omrežja',{interval:slot(t),tip:type==='d'?'praznjenje':'polnjenje',moc_kW:kw,vozil:type==='d'?3:4},
+      type==='d'?'Večerna konica: omrežje potrebuje 60 kW iz baterij parkirišča.':'Nočni presežek: omrežje želi, da parkirišče porabi 80 kW.',''));
+    const who=P21.map((r,k)=>r[t]===(type==='d'?'d':'c')?ev(k):null).filter(Boolean);
+    S.push(mk('vpp',1,2,'ok','zahteva VPP',{programID:'parkirisce-v2g',eventName:`${type==='d'?'praznjenje':'polnjenje'}-${HOURS[t]}h`,intervals:[{intervalPeriod:{start:iso(t),duration:'PT1H'},payloads:[{type:'SETPOINT',values:[kw]}]}],vozila:who},
+      'VPP zahtevo razdeli na vozila in CSMS pošlje, katera vozila jo izvedejo.',''));
+  };
+  if(t===0){
+    S.push(mk('ocpp',3,2,v==='1.6'?'miss':'ok','TransactionEvent (Started)',v==='1.6'?{opomba:'OCPP 1.6 pozna StartTransaction, ki SoC ne prenese.'}:
+      {eventType:'Started',timestamp:iso(0,1),triggerReason:'CablePluggedIn',seqNo:0,transactionInfo:{transactionId:txid(i),chargingState:'EVConnected'},evse:{id:1,connectorId:1},meterValue:[{timestamp:iso(0,1),sampledValue:[{value:20,measurand:'SoC',unitOfMeasure:{unit:'Percent'}}]}]},
+      'Vozilo se priklopi. Polnilnica začne sejo in pošlje SoC ob priklopu (20 %).',v==='1.6'?'V 1.6 je SoC ob priklopu neznan.':''));
+    S.push(mk('ocpp',3,2,v==='1.6'?'miss':v==='2.0.1'?'part':'ok','NotifyEVChargingNeeds',
+      v==='1.6'?{opomba:'Sporočila v OCPP 1.6 ni.'}:v==='2.1'?
+      {evseId:1,timestamp:iso(0,1),chargingNeeds:{requestedEnergyTransfer:'AC_BPT',controlMode:'ScheduledControl',departureTime:'2026-10-29T08:00:00+01:00',v2xChargingParameters:{maxChargePower:20000,maxDischargePower:20000,minEnergyRequest:0,targetEnergyRequest:60000,maxEnergyRequest:60000}}}:
+      {evseId:1,timestamp:iso(0,1),chargingNeeds:{requestedEnergyTransfer:'AC_three_phase',departureTime:'2026-10-29T08:00:00+01:00',acChargingParameters:{energyAmount:60000,evMinCurrent:6,evMaxCurrent:32,evMaxVoltage:400}}},
+      'Polnilnica preda potrebe vozila: odhod ob 8.00, 60 kWh do 80 %, v 2.1 tudi mejo praznjenja 20 kW.',
+      v==='1.6'?'VPP ne izve časa odhoda in potrebne energije.':v==='2.0.1'?'Brez mej praznjenja in dvosmernega načina.':''));
+    flex(); scp('cf'.includes(plan()[i][0])?'charge':'idle'); mv();
+  } else if(t===1){ flex(); mv(); }
+  else if(t===2){ scp('idle'); mv(); flex(); }
+  else if(DIS.includes(t)){
+    grid('d');
+    S.push(mk('ocpp',2,3,v==='2.1'?'ok':'miss','NotifyAllowedEnergyTransfer',v==='2.1'?{transactionId:txid(i),allowedEnergyTransfer:['AC_BPT']}:{opomba:`Sporočila v OCPP ${v} ni.`},
+      'CSMS za to sejo dovoli dvosmerni prenos (AC_BPT). Brez dovoljenja polnilnica ne prazni.',v==='2.1'?'':`Novo v OCPP 2.1.`));
+    scp('discharge'); mv();
+  } else if(CHG.includes(t)){ grid('c'); scp('charge'); mv(); }
+  else if(t===15){
+    scp('charge'); mv();
+    S.push(mk('ocpp',3,2,v==='1.6'?'miss':'ok','TransactionEvent (Ended)',v==='1.6'?{opomba:'OCPP 1.6 pozna StopTransaction brez končnega SoC.'}:
+      {eventType:'Ended',timestamp:iso(15,59),triggerReason:'EVCommunicationLost',seqNo:16,transactionInfo:{transactionId:txid(i),stoppedReason:'EVDisconnected'},meterValue:[{timestamp:iso(15,59),sampledValue:[{value:socAt(i,15),measurand:'SoC',unitOfMeasure:{unit:'Percent'}}]}]},
+      'Vozilo odpelje. Končni SoC potrdi, da je dosegel zahtevanih 80 %.',v==='1.6'?'Končni SoC v 1.6 ni sporočen.':''));
+  } else { flex(); mv(); }
+  return S;
+}
+const protoName=s=>s.type==='ocpp'?(st.ver==='1.6'?'OCPP 1.6':'OCPP '+st.ver):s.type==='vpp'?'vmesnik VPP–CSMS':'zahteva omrežja';
+
+/* ---------- stage ---------- */
+const X0=196, X1=890;
+let STEPS=[];
+function hourTitle(t){
+  if(DIS.includes(t))return `${slot(t)} · omrežje zahteva praznjenje`;
+  if(CHG.includes(t))return `${slot(t)} · omrežje zahteva polnjenje`;
+  if(t===0)return `${slot(t)} · vozila se priklopijo`;
+  if(t===15)return `${slot(t)} · zadnje polnjenje in odhod`;
+  return `${slot(t)} · brez zahteve omrežja`;
+}
+function drawStage(){
+  const t=st.t, S=STEPS, n=S.length, w=(X1-X0)/n;
+  let s=`<defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1L9 5L0 9z" fill="context-stroke"/></marker></defs>`;
+  LANES.forEach(L=>{
+    s+=`<rect x="0" y="${L.y}" width="900" height="${L.h}" rx="16" fill="${BG[L.key]}" opacity=".55"/>`;
+    s+=`<rect x="6" y="${L.y+6}" width="176" height="${L.h-12}" rx="12" fill="${BG[L.key]}" stroke="${COL[L.key]}" stroke-width="1.5"/>`;
+    s+=`<g transform="translate(18 ${L.y+18})" fill="none" stroke="${COL[L.key]}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[L.key]}</g>`;
+    s+=`<text x="50" y="${L.y+34}" font-size="15" font-weight="800" fill="var(--ink)">${L.key==='cs'?'Polnilnica':L.name}</text>`;
+    s+=`<text x="18" y="${L.y+60}" font-size="11.5" font-weight="600" fill="var(--muted)">${L.key==='cs'?'+ vozilo · 10 × 20 kW':L.sub}</text>`;
+  });
+  // OCPP strip
+  s+=`<rect x="${X0-6}" y="282" width="${X1-X0+12}" height="56" rx="10" fill="var(--ocpp-strip)" stroke="var(--ocpp)" stroke-width="1" stroke-dasharray="4 4"/>`;
+  s+=`<rect x="14" y="294" width="160" height="32" rx="16" fill="var(--ocpp-strip)" stroke="var(--ocpp)" stroke-width="1.5"/>`;
+  s+=`<text x="94" y="309" text-anchor="middle" font-size="12" font-weight="800" class="mono" fill="var(--ocpp)">OCPP ${st.ver}</text>`;
+  s+=`<text x="94" y="321" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--muted)">WebSocket · JSON</text>`;
+  // fleet chips
+  const cw=62, gap=(X1-X0-10*cw)/9, fi=focus(t);
+  for(let k=0;k<10;k++){
+    const x=X0+k*(cw+gap), y=386, a=P21[k][t], ap=plan()[k][t], soc=socAt(k,t);
+    const failed=a==='d'&&st.ver!=='2.1';
+    const fill=ap==='d'?'var(--discharge)':(ap==='c'||ap==='f')?'var(--charge)':'var(--paper)';
+    const txt=(ap==='d'||ap==='c'||ap==='f')?'var(--paper)':'var(--ink)';
+    s+=`<g><rect x="${x}" y="${y}" width="${cw}" height="76" rx="12" fill="${failed?'var(--bad-bg)':'var(--paper)'}" stroke="${failed?'var(--bad)':k===fi?'var(--ink)':'var(--cs)'}" stroke-width="${k===fi?2.4:1.3}" ${failed?'stroke-dasharray="4 3"':''}/>`;
+    s+=`<text x="${x+cw/2}" y="${y+17}" text-anchor="middle" font-size="11" font-weight="800" class="mono" fill="var(--ink)">${ev(k)}</text>`;
+    s+=`<rect x="${x+9}" y="${y+26}" width="${cw-18}" height="12" rx="4" fill="var(--sheet)" stroke="var(--line)"/>`;
+    s+=`<rect x="${x+9}" y="${y+26}" width="${(cw-18)*soc/100}" height="12" rx="4" fill="${soc>=80?'var(--ok)':'var(--cs)'}"/>`;
+    s+=`<text x="${x+cw/2}" y="${y+52}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ink)">${st.ver==='1.6'?'? %':soc+' %'}</text>`;
+    const lbl=failed?'ni ukaza':ap==='d'?'prazni':(ap==='c'||ap==='f')?'polni':'miruje';
+    s+=`<rect x="${x+8}" y="${y+58}" width="${cw-16}" height="13" rx="6.5" fill="${failed?'var(--bad)':fill}" ${fill==='var(--paper)'&&!failed?'stroke="var(--line)"':''}/>`;
+    s+=`<text x="${x+cw/2}" y="${y+68}" text-anchor="middle" font-size="9" font-weight="700" fill="${failed?'var(--paper)':txt}">${lbl}</text></g>`;
+  }
+  // arrows
+  S.forEach((m,k)=>{
+    const x=X0+w*(k+.5), ya=LANES[m.from].a, yb=LANES[m.to].a;
+    const down=yb>ya, y1=ya+(down?14:-14), y2=yb+(down?-16:16);
+    const done=st.animStep<0||k<st.animStep;
+    const col=m.status==='miss'?'var(--bad)':m.type==='ocpp'?'var(--ocpp)':m.type==='grid'?'var(--grid)':'var(--vpp)';
+    const dash=m.status==='miss'||m.type!=='ocpp'?'stroke-dasharray="5 4"':'';
+    s+=`<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="${col}" stroke-width="${m.type==='ocpp'?2.2:1.6}" ${dash} marker-end="url(#ah)" opacity="${done?1:.25}"/>`;
+    s+=`<circle cx="${x}" cy="${y1}" r="3" fill="${col}" opacity="${done?1:.25}"/>`;
+    const my=(y1+y2)/2, srcCol=COL[LANES[m.from].key];
+    const bfill=m.status==='miss'?'var(--bad)':srcCol;
+    s+=`<g class="badge" data-k="${k}" role="button" tabindex="0" aria-label="Korak ${k+1}: ${m.name}"><circle cx="${x}" cy="${my}" r="12" fill="${bfill}" stroke="${k===st.sel?'var(--ink)':'var(--paper)'}" stroke-width="${k===st.sel?3:2}"/><text x="${x}" y="${my+4.5}" text-anchor="middle" font-size="12" font-weight="800" fill="var(--paper)">${m.status==='miss'?'✕':k+1}</text></g>`;
+    // short label next to badge
+    const short=m.name.replace('SetChargingProfileResponse','Response').replace('NotifyAllowedEnergyTransfer','AllowedEnergyTransfer').replace('TransactionEvent','TxEvent').replace('NotifyEVChargingNeeds','EVChargingNeeds').replace('poročilo o prožnosti','prožnost').replace('zahteva omrežja','zahteva').replace('zahteva VPP','ukaz VPP');
+    const maxc=Math.floor((Math.min(w-34,900-x-22))/6.4), lab=short.length>maxc?short.slice(0,Math.max(0,maxc-1))+'…':short;
+    s+=`<text x="${x+16}" y="${my+4}" font-size="10.5" font-weight="600" class="mono" fill="${m.status==='miss'?'var(--bad)':'var(--muted)'}" ${m.status==='miss'?'text-decoration="line-through"':''}>${maxc>4?lab:''}</text>`;
+  });
+  s+=`<g id="env" opacity="0"><rect x="-11" y="-8" width="22" height="16" rx="3" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.6"/><path d="M-10 -6 0 2 10 -6" fill="none" stroke="var(--ink)" stroke-width="1.6"/></g>`;
+  $('stage').innerHTML=s;
+  $('stage').querySelectorAll('.badge').forEach(b=>{
+    const go=()=>{st.sel=+b.dataset.k; if(!st.playing) flyOnce(st.sel); render(false)};
+    b.addEventListener('click',go); b.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go()}});
+  });
+}
+function arrowGeom(k){
+  const n=STEPS.length,w=(X1-X0)/n,m=STEPS[k],x=X0+w*(k+.5),ya=LANES[m.from].a,yb=LANES[m.to].a,down=yb>ya;
+  return {x,y1:ya+(down?14:-14),y2:yb+(down?-16:16),miss:m.status==='miss'};
+}
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function fly(k,done){
+  const env=$('env'); if(!env){done&&done();return}
+  const g=arrowGeom(k), dur=reduce?1:700, t0=performance.now();
+  env.setAttribute('opacity','1');
+  env.querySelector('rect').setAttribute('stroke',g.miss?'var(--bad)':'var(--ink)');
+  env.querySelector('path').setAttribute('stroke',g.miss?'var(--bad)':'var(--ink)');
+  const end=g.miss?.5:1;
+  const step=now=>{
+    const p=Math.min(1,(now-t0)/dur), e=p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+    const y=g.y1+(g.y2-g.y1)*e*end;
+    env.setAttribute('transform',`translate(${g.x} ${y})`);
+    if(g.miss&&p>.7)env.setAttribute('opacity',String(1-(p-.7)/.3));
+    if(p<1)requestAnimationFrame(step); else {env.setAttribute('opacity','0'); done&&done()}
+  };
+  requestAnimationFrame(step);
+}
+function flyOnce(k){requestAnimationFrame(()=>fly(k))}
+
+/* ---------- side + steps ---------- */
+function renderSteps(){
+  $('steps').innerHTML=STEPS.map((m,k)=>{
+    const col=m.status==='miss'?'var(--bad)':COL[LANES[m.from].key];
+    const tag=m.status==='miss'?'<span class="tag miss">ni v '+st.ver+'</span>':m.status==='part'?'<span class="tag part">delno</span>':'';
+    return `<button type="button" class="step ${m.status}" data-k="${k}" aria-pressed="${k===st.sel}"><span class="num" style="background:${col}">${k+1}</span><span><span class="dir">${LANES[m.from].name.replace(' + vozilo','')} → ${LANES[m.to].name.replace(' + vozilo','')}</span><br><span class="nm">${m.name}</span>${tag}<div class="ex">${m.note||m.explain}</div></span></button>`}).join('');
+  $('steps').querySelectorAll('.step').forEach(b=>b.addEventListener('click',()=>{st.sel=+b.dataset.k; if(!st.playing)flyOnce(st.sel); render(false)}));
+}
+function hl(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/("(?:[^"\\]|\\.)*")(\s*:)?|(-?\b\d+(?:\.\d+)?\b)|\b(true|false|null)\b/g,(m,str,c,num,lit)=>str?(c?`<span class="jk">${str}</span>${c}`:`<span class="js">${str}</span>`):`<span class="jn">${num||lit}</span>`)}
+function renderJson(){
+  const m=STEPS[Math.min(st.sel,STEPS.length-1)];
+  $('jname').textContent=m.name;
+  $('jdir').textContent=`${LANES[m.from].name.replace(' + vozilo','')} → ${LANES[m.to].name.replace(' + vozilo','')}`;
+  $('jproto').textContent=m.status==='miss'?`ni v OCPP ${st.ver}`:protoName(m);
+  $('jproto').style.color=m.status==='miss'?'var(--bad)':'';
+  $('jex').textContent=m.explain+(m.note?' '+m.note:'');
+  $('jbody').innerHTML=hl(JSON.stringify(m.payload,null,2));
+}
+function renderCount(){
+  const REQ=[...DIS.map(t=>({t,k:'d'})),...CHG.map(t=>({t,k:'c'}))];
+  let ok=0,seen=0;
+  $('dots').innerHTML=REQ.map(r=>{
+    const done=r.t<=st.t, good=r.k==='c'||st.ver==='2.1';
+    if(done){seen++; if(good)ok++}
+    return `<span class="rq ${r.k} ${done?'done '+(good?'ok':'fail'):''}" title="${slot(r.t)}">${done?(good?'✓':'✕'):HOURS[r.t]}</span>`}).join('');
+  $('cnt').innerHTML=seen?`${ok} <small>/ ${seen} do zdaj · 9 skupaj</small>`:`0 <small>/ 9 · prva zahteva ob 19.00</small>`;
+  $('cnt').style.color=ok<seen?'var(--bad)':'var(--ink)';
+  $('cntnote').textContent=st.ver==='2.1'?'OCPP 2.1 prenese ukaz za praznjenje, zato parkirišče izpolni vseh 9 zahtev.':`OCPP ${st.ver} nima ukaza za praznjenje: 4 večerne zahteve ostanejo neizpolnjene, izpolni se le 5 od 9.`;
+}
+/* ---------- parking-lot energy scene ---------- */
+let sceneKey='';
+function drawScene(){
+  const t=st.t, key=st.ver+'|'+t; if(key===sceneKey)return; sceneKey=key;
+  const BUS=124, XS=k=>404+k*85.5, CY=152, VY=246;
+  const act=k=>plan()[k][t], want=k=>P21[k][t];
+  let net=0, nc=0, nd=0, nfail=0;
+  for(let k=0;k<10;k++){const a=act(k); if(a==='c'||a==='f'){net+=20;nc++} else if(a==='d'){net-=20;nd++} if(want(k)==='d'&&a!=='d')nfail++}
+  const req=DIS.includes(t)?-60:CHG.includes(t)?80:null;
+  const met=req===null?null:(req<0?net<=req:net>=req);
+  const fmt=v=>(v>0?'+':v<0?'−':'')+Math.abs(v)+' kW';
+  // stats
+  $('s-req').textContent=req===null?'ni zahteve':fmt(req); $('s-req').className='v '+(req===null?'':req<0?'d':'c');
+  $('s-net').textContent=fmt(net); $('s-net').className='v '+(net<0?'d':net>0?'c':'');
+  $('s-cnt').textContent=`${nd} ${nd===1?'prazni':'praznijo'} · ${nc} ${nc===1?'polni':nc===2?'polnita':'polni'}`;
+  $('s-ok').textContent=met===null?'prosto polnjenje':met?'izpolnjeno':'ni izpolnjeno';
+  $('s-ok').className='v '+(met===null?'':met?'ok':'bad');
+  let sub=slot(t)+' · ';
+  if(req!==null&&req<0) sub+=met?`${nd} vozila oddajajo ${Math.abs(net)} kW v omrežje ob večerni konici`:`omrežje zahteva 60 kW, OCPP ${st.ver} praznjenja ne more ukazati`;
+  else if(req!==null) sub+=`${nc} vozila porabijo ${net} kW nočnega presežka`;
+  else if(t===0) sub+='vozila se priklopijo; tista, ki bodo praznila, se najprej dodatno napolnijo';
+  else if(t===15) sub+='zadnja ura pred odhodom: vsa vozila se dopolnijo do 80 %';
+  else sub+=nc?`${nc} ${nc===1?'vozilo se polni':'vozila se polnijo'} brez zahteve omrežja`:'brez toka energije, vozila čakajo';
+  $('scene-sub').textContent=sub;
+
+  const w=v=>Math.min(7,2.2+Math.abs(v)/20*0.55);
+  let s='';
+  // ground + parking bays
+  s+=`<rect x="354" y="${VY-14}" width="872" height="84" rx="14" fill="var(--sheet)" stroke="var(--line)"/>`;
+  for(let k=0;k<=10;k++){const x=XS(k)-42.75; s+=`<line x1="${x}" y1="${VY-6}" x2="${x}" y2="${VY+62}" stroke="var(--line)" stroke-width="2"/>`}
+  s+=`<text x="1222" y="${BUS-18}" text-anchor="end" font-size="11" font-weight="700" letter-spacing=".06em" fill="var(--muted)">SLUŽBENO PARKIRIŠČE · 10 × 20 kW</text>`;
+  // grid tower
+  s+=`<g fill="none" stroke="var(--grid)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M58 250 L86 52 L114 250"/><path d="M66 192 L106 192 M72 140 L100 140 M77 100 L95 100"/>
+    <path d="M66 192 L100 140 M106 192 L72 140 M72 140 L95 100 M100 140 L77 100"/>
+    <path d="M48 76 H124 M56 76 V88 M116 76 V88 M86 52 V76"/></g>`;
+  s+=`<text x="86" y="272" text-anchor="middle" font-size="14" font-weight="800" fill="var(--ink)">Omrežje</text>`;
+  s+=`<text x="86" y="288" text-anchor="middle" font-size="11" font-weight="600" fill="var(--muted)">ELES · DSO</text>`;
+  // transformer
+  s+=`<rect x="160" y="${BUS-30}" width="74" height="60" rx="12" fill="var(--grid-bg)" stroke="var(--grid)" stroke-width="1.6"/>`;
+  s+=`<circle cx="188" cy="${BUS}" r="11" fill="none" stroke="var(--grid)" stroke-width="1.6"/><circle cx="204" cy="${BUS}" r="11" fill="none" stroke="var(--grid)" stroke-width="1.6"/>`;
+  s+=`<text x="197" y="${BUS+48}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--muted)">TP 20/0,4 kV</text>`;
+  // meter / connection point
+  s+=`<rect x="262" y="${BUS-30}" width="98" height="60" rx="12" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.6"/>`;
+  s+=`<text x="311" y="${BUS-8}" text-anchor="middle" font-size="9" font-weight="700" letter-spacing=".05em" fill="var(--muted)">MERILNO MESTO</text>`;
+  s+=`<text x="311" y="${BUS+16}" text-anchor="middle" font-size="17" font-weight="800" class="mono" fill="${net<0?'var(--discharge)':net>0?'var(--charge)':'var(--muted)'}">${fmt(net)}</text>`;
+  s+=`<text x="311" y="${BUS+48}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--muted)">priključek parkirišča</text>`;
+  // trunk cables
+  const trunk=[[114,BUS-46,160,BUS-6],[234,BUS,268,BUS],[354,BUS,XS(9)+20,BUS]];
+  const tcol=net<0?'var(--discharge)':'var(--charge)';
+  s+=`<path d="M100 76 C140 76 140 ${BUS} 160 ${BUS}" fill="none" stroke="var(--line)" stroke-width="5"/>`;
+  s+=`<line x1="234" y1="${BUS}" x2="262" y2="${BUS}" stroke="var(--line)" stroke-width="5"/>`;
+  s+=`<line x1="360" y1="${BUS}" x2="${XS(9)+20}" y2="${BUS}" stroke="var(--line)" stroke-width="5"/>`;
+  if(net!==0){
+    const cls='flow'+(net<0?' rev':'');
+    s+=`<path class="${cls}" d="M100 76 C140 76 140 ${BUS} 160 ${BUS}" stroke="${tcol}" stroke-width="${w(net)}"/>`;
+    s+=`<line class="${cls}" x1="234" y1="${BUS}" x2="262" y2="${BUS}" stroke="${tcol}" stroke-width="${w(net)}"/>`;
+    // bus segments carry the sum of the stations further along
+    for(let k=0;k<10;k++){
+      let seg=0; for(let j=k;j<10;j++){const a=act(j); seg+=(a==='c'||a==='f')?20:a==='d'?-20:0}
+      if(seg===0)continue;
+      const xa=k===0?360:XS(k-1), xb=XS(k);
+      s+=`<line class="flow${seg<0?' rev':''}" x1="${xa}" y1="${BUS}" x2="${xb}" y2="${BUS}" stroke="${seg<0?'var(--discharge)':'var(--charge)'}" stroke-width="${w(seg)}"/>`;
+    }
+    s+=`<text x="${(360+XS(0))/2}" y="${BUS-14}" text-anchor="middle" font-size="16" fill="${tcol}">${net<0?'◀':'▶'}</text>`;
+    s+=`<text x="137" y="${BUS-52}" text-anchor="middle" font-size="16" fill="${tcol}">${net<0?'◀':'▶'}</text>`;
+  }
+  // stations + vans
+  for(let k=0;k<10;k++){
+    const x=XS(k), a=act(k), wa=want(k), fail=wa==='d'&&a!=='d', soc=socAt(k,t);
+    const flowing=a==='c'||a==='f'||a==='d', col=a==='d'?'var(--discharge)':'var(--charge)';
+    // drop + plug cable (base)
+    s+=`<line x1="${x}" y1="${BUS}" x2="${x}" y2="${CY}" stroke="var(--line)" stroke-width="4"/>`;
+    s+=`<path d="M${x+10} ${CY+56} C${x+30} ${CY+70} ${x+30} ${VY-4} ${x+16} ${VY+8}" fill="none" stroke="var(--line)" stroke-width="4"/>`;
+    if(flowing){
+      const cls='flow'+(a==='d'?' rev':'')+(a==='f'?' slow':'');
+      s+=`<line class="${cls}" x1="${x}" y1="${BUS}" x2="${x}" y2="${CY}" stroke="${col}" stroke-width="3.2"/>`;
+      s+=`<path class="${cls}" d="M${x+10} ${CY+56} C${x+30} ${CY+70} ${x+30} ${VY-4} ${x+16} ${VY+8}" stroke="${col}" stroke-width="3.2"/>`;
+    }
+    if(fail) s+=`<path d="M${x+10} ${CY+56} C${x+30} ${CY+70} ${x+30} ${VY-4} ${x+16} ${VY+8}" fill="none" stroke="var(--bad)" stroke-width="2.4" stroke-dasharray="4 4"/>`;
+    s+=`<circle cx="${x}" cy="${BUS}" r="4" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>`;
+    // charger post
+    s+=`<rect x="${x-15}" y="${CY}" width="30" height="62" rx="8" fill="var(--paper)" stroke="${fail?'var(--bad)':'var(--cs)'}" stroke-width="1.6"/>`;
+    s+=`<rect x="${x-10}" y="${CY+7}" width="20" height="15" rx="3" fill="${flowing?(a==='d'?'var(--cs-bg)':'var(--csms-bg)'):'var(--sheet)'}" stroke="var(--line)"/>`;
+    s+=`<text x="${x}" y="${CY+18}" text-anchor="middle" font-size="8.5" font-weight="800" class="mono" fill="${flowing?col:'var(--muted)'}">${a==='d'?'−20':flowing?'+20':'0'}</text>`;
+    s+=`<path d="M${x+1} ${CY+29} l-5 9 h4 l-1 7 6-10 h-4 l1-6z" fill="${flowing?col:'var(--line)'}"/>`;
+    // van (side view)
+    const vx=x-32, vy=VY+6;
+    s+=`<g><rect x="${vx}" y="${vy}" width="50" height="32" rx="6" fill="var(--paper)" stroke="${fail?'var(--bad)':'var(--ink)'}" stroke-width="1.6"/>`;
+    s+=`<path d="M${vx+50} ${vy+8} h8 q6 0 6 6 v18 h-14z" fill="var(--paper)" stroke="${fail?'var(--bad)':'var(--ink)'}" stroke-width="1.6"/>`;
+    s+=`<rect x="${vx+52}" y="${vy+11}" width="7" height="7" rx="1.5" fill="var(--csms-bg)"/>`;
+    s+=`<rect x="${vx+5}" y="${vy+7}" width="40" height="11" rx="3" fill="var(--sheet)" stroke="var(--line)"/>`;
+    s+=`<rect x="${vx+5}" y="${vy+7}" width="${40*soc/100}" height="11" rx="3" fill="${soc>=80?'var(--ok)':a==='d'?'var(--discharge)':'var(--charge)'}"/>`;
+    s+=`<circle cx="${vx+12}" cy="${vy+33}" r="6" fill="var(--ink)"/><circle cx="${vx+52}" cy="${vy+33}" r="6" fill="var(--ink)"/>`;
+    s+=`<circle cx="${vx+12}" cy="${vy+33}" r="2.2" fill="var(--paper)"/><circle cx="${vx+52}" cy="${vy+33}" r="2.2" fill="var(--paper)"/></g>`;
+    s+=`<text x="${x}" y="${vy+56}" text-anchor="middle" font-size="11" font-weight="800" class="mono" fill="var(--ink)">${ev(k)}</text>`;
+    s+=`<text x="${x}" y="${vy+70}" text-anchor="middle" font-size="11" font-weight="700" fill="${fail?'var(--bad)':'var(--muted)'}">${fail?'ni ukaza':(st.ver==='1.6'?'SoC ?':soc+' %')}</text>`;
+  }
+  $('scene').innerHTML=s;
+}
+
+function render(rebuild=true){
+  if(rebuild){STEPS=buildSteps(st.t); if(st.sel>=STEPS.length)st.sel=0}
+  $('time').value=st.t; $('clock').textContent=slot(st.t);
+  $('stagetitle').textContent=hourTitle(st.t);
+  drawScene(); drawStage(); renderSteps(); renderJson(); renderCount();
+}
+
+/* ---------- controls ---------- */
+document.querySelectorAll('#ver button').forEach(b=>b.addEventListener('click',()=>{st.ver=b.dataset.v;document.querySelectorAll('#ver button').forEach(x=>x.setAttribute('aria-pressed',x===b));render()}));
+$('time').addEventListener('input',e=>{stop();st.t=+e.target.value;st.sel=0;render()});
+let token=0;
+function stop(){st.playing=false;st.animStep=-1;token++;$('pl').textContent='Predvajaj';$('pi').innerHTML='<path d="M4 2l10 6-10 6z"/>'}
+function playHour(tok){
+  if(tok!==token)return;
+  st.animStep=0; st.sel=0; render();
+  const next=k=>{
+    if(tok!==token)return;
+    if(k>=STEPS.length){
+      st.animStep=-1; render(false);
+      setTimeout(()=>{ if(tok!==token)return; if(st.t>=15){stop();render(false);return} st.t++; playHour(tok)}, reduce?900:600);
+      return;
+    }
+    st.sel=k; st.animStep=k; render(false);
+    fly(k,()=>{ st.animStep=k+1; setTimeout(()=>next(k+1), reduce?400:140) });
+  };
+  next(0);
+}
+$('play').addEventListener('click',()=>{
+  if(st.playing){stop();render(false);return}
+  st.playing=true; token++; $('pl').textContent='Ustavi'; $('pi').innerHTML='<path d="M3 2h4v12H3zM9 2h4v12H9z"/>';
+  if(st.t>=15)st.t=0;
+  playHour(token);
+});
+render();
+st.sel=Math.max(0,STEPS.findIndex(m=>m.name==='SetChargingProfile')); render(false);
+})();
+</script>
+
+</body>
+</html>
